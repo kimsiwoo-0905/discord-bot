@@ -6,45 +6,47 @@ const client = new Client({
 });
 
 const MAX_COUNT = 50;
-const INTERVAL_MS = 500;      
-const USER_COOLDOWN = 500; 
+const INTERVAL_MS = 500;
+const USER_COOLDOWN = 500;
 const MAX_MESSAGE_LEN = 1500;
 
-const lastUsed = new Map(); // userId -> timestamp
-const running = new Map();  // channelId -> { stop: boolean }
+const lastUsed = new Map();
+const running = new Map();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function safeSend(interaction, content) {
-  // 채널 확보 (interaction.channel이 null일 수 있음)
   const channel =
     interaction.channel ??
     (await interaction.client.channels.fetch(interaction.channelId).catch(() => null));
 
-  if (!channel || typeof channel.isTextBased !== "function" || !channel.isTextBased()) {
-    throw new Error("이 채널에서는 메시지를 보낼 수 없어요.");
+  // send 함수가 없는 채널이면 전송 불가 (포럼 목록, 음성채널 등)
+  if (!channel || typeof channel.send !== "function") {
+    throw new Error("텍스트 채널이나 스레드 안에서 실행해주세요.");
   }
 
-  // 길드 내에서만 권한 체크
+  // 길드에서만 권한 체크
   if (interaction.inGuild()) {
-    // ✅ 캐시 없어도 안전하게 봇 멤버 가져오기
     const me = await interaction.guild.members.fetchMe().catch(() => null);
-    if (!me) throw new Error("에러");
+    if (!me) throw new Error("봇 정보를 불러올 수 없습니다.");
 
-    const perms = channel.permissionsFor(me);
-    if (!perms?.has(PermissionsBitField.Flags.ViewChannel)) {
-      throw new Error("봇에게 권한이 없어요.");
-    }
-    if (!perms?.has(PermissionsBitField.Flags.SendMessages)) {
-      throw new Error("봇에게 권한이 없어요.");
-    }
+    const perms = channel.permissionsFor?.(me);
 
-    // 스레드면 스레드 전송 권한도 확인
-    if (typeof channel.isThread === "function" && channel.isThread()) {
-      if (!perms?.has(PermissionsBitField.Flags.SendMessagesInThreads)) {
-        throw new Error("봇에게 권한이 없어요.");
+    if (perms) {
+      if (!perms.has(PermissionsBitField.Flags.ViewChannel)) {
+        throw new Error("봇에게 채널 보기 권한이 없습니다.");
+      }
+      if (!perms.has(PermissionsBitField.Flags.SendMessages)) {
+        throw new Error("봇에게 메시지 전송 권한이 없습니다.");
+      }
+
+      // 스레드일 경우 추가 체크
+      if (typeof channel.isThread === "function" && channel.isThread()) {
+        if (!perms.has(PermissionsBitField.Flags.SendMessagesInThreads)) {
+          throw new Error("봇에게 스레드 전송 권한이 없습니다.");
+        }
       }
     }
   }
@@ -52,7 +54,7 @@ async function safeSend(interaction, content) {
   return channel.send({
     content,
     allowedMentions: {
-      parse: ["users", "roles", "everyone"], // 모든 멘션 허용 (원치 않으면 여기서 줄이면 됨)
+      parse: ["users", "roles", "everyone"],
       repliedUser: true,
     },
   });
@@ -65,71 +67,101 @@ client.once("ready", () => {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  // ✅ 관리자/메시지관리 권한 제한 제거
-  // => 이제 "앱 명령어 권한(Integrations > Commands)"만 있으면 사용 가능
-
+  // -------------------------
+  // /도배
+  // -------------------------
   if (interaction.commandName === "도배") {
     const msg = interaction.options.getString("메시지", true);
     const count = interaction.options.getInteger("개수", true);
 
     if (msg.length > MAX_MESSAGE_LEN) {
-      return interaction.reply({ content: "1500자 이하로 적어주세요.", ephemeral: true });
-    }
-    if (count < 1 || count > MAX_COUNT) {
-      return interaction.reply({ content: "1~50 사이로 적어주세요.", ephemeral: true });
+      return interaction.reply({
+        content: "1500자 이하로 적어주세요.",
+        ephemeral: true,
+      });
     }
 
-    // 유저 쿨타임
+    if (count < 1 || count > MAX_COUNT) {
+      return interaction.reply({
+        content: `1~${MAX_COUNT} 사이로 적어주세요.`,
+        ephemeral: true,
+      });
+    }
+
+    // 쿨타임 체크
     const now = Date.now();
     const last = lastUsed.get(interaction.user.id) ?? 0;
     const leftMs = USER_COOLDOWN - (now - last);
+
     if (leftMs > 0) {
-      const leftSec = Math.ceil(leftMs / 1000);
-      return interaction.reply({ content: `너무 빠릅니다.`, ephemeral: true });
+      return interaction.reply({
+        content: "너무 빠릅니다.",
+        ephemeral: true,
+      });
     }
+
     lastUsed.set(interaction.user.id, now);
 
     const channelId = interaction.channelId;
 
     if (running.has(channelId)) {
-      return interaction.reply({ content: "이미 실행 중 입니다.", ephemeral: true });
+      return interaction.reply({
+        content: "이미 실행 중 입니다.",
+        ephemeral: true,
+      });
     }
 
     const state = { stop: false };
     running.set(channelId, state);
 
-    await interaction.reply({ content: "도배 시작", ephemeral: true });
+    await interaction.reply({
+      content: "도배 시작",
+      ephemeral: true,
+    });
 
     try {
       for (let i = 0; i < count; i++) {
         if (state.stop) break;
 
-        await safeSend(interaction, msg);
+        try {
+          await safeSend(interaction, msg);
+        } catch (err) {
+          console.error("[SendError]", err.message);
+          await interaction.followUp({
+            content: `전송 실패: ${err.message}`,
+            ephemeral: true,
+          });
+          break;
+        }
+
         if (i !== count - 1) await sleep(INTERVAL_MS);
       }
-    } catch (err) {
-      console.error("[SendError]", err);
-      await interaction.followUp({
-        content: `전송 실패: ${err?.message ?? String(err)}`,
-        ephemeral: true,
-      });
     } finally {
       running.delete(channelId);
     }
+
     return;
   }
 
+  // -------------------------
+  // /도배중지
+  // -------------------------
   if (interaction.commandName === "도배중지") {
     const state = running.get(interaction.channelId);
 
     if (!state) {
-      return interaction.reply({ content: "진행 중인 도배가 없어요.", ephemeral: true });
+      return interaction.reply({
+        content: "진행 중인 도배가 없어요.",
+        ephemeral: true,
+      });
     }
 
-    // ✅ stop만 true로 바꾸면 루프가 다음 반복 전에 멈춤
     state.stop = true;
 
-    return interaction.reply({ content: "도배를 중지했어요.", ephemeral: true });
+    return interaction.reply({
+      content: "도배를 중지했어요.",
+      ephemeral: true,
+    });
   }
 });
 
