@@ -1,63 +1,36 @@
 require("dotenv").config();
-const { Client, GatewayIntentBits, PermissionsBitField } = require("discord.js");
+const { Client, GatewayIntentBits } = require("discord.js");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
 const MAX_COUNT = 50;
-const INTERVAL_MS = 500;
-const USER_COOLDOWN = 500;
+const INTERVAL_MS = 1000; // 1초 간격
 const MAX_MESSAGE_LEN = 1500;
 
-const lastUsed = new Map();
-const running = new Map();
+const lastUsedAt = new Map(); 
+const runningByUser = new Map(); 
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function getUserRunMap(userId) {
+  let m = runningByUser.get(userId);
+  if (!m) {
+    m = new Map();
+    runningByUser.set(userId, m);
+  }
+  return m;
 }
 
 async function safeSend(interaction, content) {
-  const channel =
+  const ch =
     interaction.channel ??
-    (await interaction.client.channels.fetch(interaction.channelId).catch(() => null));
+    (await interaction.client.channels.fetch(interaction.channelId));
 
-  // send 함수가 없는 채널이면 전송 불가 (포럼 목록, 음성채널 등)
-  if (!channel || typeof channel.send !== "function") {
-    throw new Error("텍스트 채널이나 스레드 안에서 실행해주세요.");
-  }
-
-  // 길드에서만 권한 체크
-  if (interaction.inGuild()) {
-    const me = await interaction.guild.members.fetchMe().catch(() => null);
-    if (!me) throw new Error("봇 정보를 불러올 수 없습니다.");
-
-    const perms = channel.permissionsFor?.(me);
-
-    if (perms) {
-      if (!perms.has(PermissionsBitField.Flags.ViewChannel)) {
-        throw new Error("봇에게 채널 보기 권한이 없습니다.");
-      }
-      if (!perms.has(PermissionsBitField.Flags.SendMessages)) {
-        throw new Error("봇에게 메시지 전송 권한이 없습니다.");
-      }
-
-      // 스레드일 경우 추가 체크
-      if (typeof channel.isThread === "function" && channel.isThread()) {
-        if (!perms.has(PermissionsBitField.Flags.SendMessagesInThreads)) {
-          throw new Error("봇에게 스레드 전송 권한이 없습니다.");
-        }
-      }
-    }
-  }
-
-  return channel.send({
-    content,
-    allowedMentions: {
-      parse: ["users", "roles", "everyone"],
-      repliedUser: true,
-    },
-  });
+  return ch.send({ content });
 }
 
 client.once("ready", () => {
@@ -67,96 +40,84 @@ client.once("ready", () => {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  // -------------------------
-  // /도배
-  // -------------------------
+  const userId = interaction.user.id;
+
   if (interaction.commandName === "도배") {
     const msg = interaction.options.getString("메시지", true);
     const count = interaction.options.getInteger("개수", true);
 
     if (msg.length > MAX_MESSAGE_LEN) {
       return interaction.reply({
-        content: "1500자 이하로 적어주세요.",
+        content: `1500자 이내로 작성해주세요.`,
         ephemeral: true,
       });
     }
 
     if (count < 1 || count > MAX_COUNT) {
       return interaction.reply({
-        content: `1~${MAX_COUNT} 사이로 적어주세요.`,
+        content: `개수는 1~50 사이로 해주세요.`,
         ephemeral: true,
       });
     }
 
-    // 쿨타임 체크
     const now = Date.now();
-    const last = lastUsed.get(interaction.user.id) ?? 0;
-    const leftMs = USER_COOLDOWN - (now - last);
-
-    if (leftMs > 0) {
+    const last = lastUsedAt.get(userId) ?? 0;
+    const diff = now - last;
+    if (diff < INTERVAL_MS) {
+      const left = ((INTERVAL_MS - diff) / 1000).toFixed(1);
       return interaction.reply({
-        content: "너무 빠릅니다.",
+        content: `잠시만 기다려주세요.`,
         ephemeral: true,
       });
     }
-
-    lastUsed.set(interaction.user.id, now);
+    lastUsedAt.set(userId, now);
 
     const channelId = interaction.channelId;
+    const userRun = getUserRunMap(userId);
 
-    if (running.has(channelId)) {
+    if (userRun.has(channelId)) {
       return interaction.reply({
-        content: "이미 실행 중 입니다.",
+        content: "이미 실행 중이에요.",
         ephemeral: true,
       });
     }
 
     const state = { stop: false };
-    running.set(channelId, state);
+    userRun.set(channelId, state);
 
     await interaction.reply({
-      content: "도배 시작",
+      content: `도배를 시작합니다.`,
       ephemeral: true,
     });
 
     try {
       for (let i = 0; i < count; i++) {
-        if (state.stop) break;
+        const current = getUserRunMap(userId).get(channelId);
+        if (!current || current.stop) break;
 
-        try {
-          await safeSend(interaction, msg);
-        } catch (err) {
-          console.error("[SendError]", err.message);
-          await interaction.followUp({
-            content: `전송 실패: ${err.message}`,
-            ephemeral: true,
-          });
-          break;
-        }
+        await safeSend(interaction, msg);
 
         if (i !== count - 1) await sleep(INTERVAL_MS);
       }
+    } catch (e) {
+      console.error(e);
     } finally {
-      running.delete(channelId);
+      getUserRunMap(userId).delete(channelId);
     }
-
-    return;
   }
 
-  // -------------------------
-  // /도배중지
-  // -------------------------
   if (interaction.commandName === "도배중지") {
-    const state = running.get(interaction.channelId);
+    const userRun = getUserRunMap(userId);
 
-    if (!state) {
+    if (userRun.size === 0) {
       return interaction.reply({
         content: "진행 중인 도배가 없어요.",
         ephemeral: true,
       });
     }
 
-    state.stop = true;
+    for (const state of userRun.values()) state.stop = true;
+    userRun.clear();
 
     return interaction.reply({
       content: "도배를 중지했어요.",
