@@ -5,42 +5,30 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-// ✅ 허용된 사용자 2명만
-const ALLOWED_USER_IDS = new Set([
-  "1418826793627947038",
-  "1340579141770285118",
-]);
-
-const MAX_COUNT = 100;
-const INTERVAL_MS = 500;      // ✅ 2초 간격 (원하면 1000으로 바꿔도 됨)
+const MAX_COUNT = 50;            
+const INTERVAL_MS = 500;       
+const USER_COOLDOWN = 500;     
 const MAX_MESSAGE_LEN = 1500;
 
-// 유저별 마지막 실행 시간(명령 연타 방지)
-const lastUsedAt = new Map(); // userId -> timestamp
-
-// 유저별 진행 상태 (channelId 별로)
-const runningByUser = new Map(); // userId -> Map(channelId, { stop: boolean })
+const lastUsed = new Map();      // userId -> timestamp
+const running = new Map();       // channelId -> { stop: boolean }
 
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function getUserRunMap(userId) {
-  let m = runningByUser.get(userId);
-  if (!m) {
-    m = new Map();
-    runningByUser.set(userId, m);
-  }
-  return m;
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function safeSend(interaction, content) {
-  // DM/서버 상관없이 채널을 확실히 가져와서 전송
-  const ch =
+  const channel =
     interaction.channel ??
     (await interaction.client.channels.fetch(interaction.channelId));
 
-  return ch.send({ content });
+  return channel.send({
+    content: content,
+    allowedMentions: {
+      parse: ["users", "roles", "everyone"], // ✅ 전부 허용
+      repliedUser: true,
+    },
+  });
 }
 
 client.once("ready", () => {
@@ -50,104 +38,90 @@ client.once("ready", () => {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  const userId = interaction.user.id;
-
-  // ✅ 화이트리스트 체크
-  if (!ALLOWED_USER_IDS.has(userId)) {
-    return interaction.reply({
-      content: "픽셜 전용이다",
-      ephemeral: true,
-    });
-  }
-
-  // ✅ /도배
+  // -------------------------
+  // /도배
+  // -------------------------
   if (interaction.commandName === "도배") {
     const msg = interaction.options.getString("메시지", true);
     const count = interaction.options.getInteger("개수", true);
 
     if (msg.length > MAX_MESSAGE_LEN) {
       return interaction.reply({
-        content: `글자수 줄여라`,
+        content: `1500자 이하로 적어주세요.`,
         ephemeral: true,
       });
     }
+
     if (count < 1 || count > MAX_COUNT) {
       return interaction.reply({
-        content: `너무 길다`,
+        content: `1~50 사이로 적어주세요.`,
         ephemeral: true,
       });
     }
 
-    // ✅ 유저별 쿨타임(명령 연타 방지)
+    // 유저 쿨타임
     const now = Date.now();
-    const last = lastUsedAt.get(userId) ?? 0;
-    const diff = now - last;
-    if (diff < INTERVAL_MS) {
-      const left = ((INTERVAL_MS - diff) / 1000).toFixed(1);
+    const last = lastUsed.get(interaction.user.id) ?? 0;
+    const leftMs = USER_COOLDOWN - (now - last);
+
+    if (leftMs > 0) {
       return interaction.reply({
-        content: `너무 빠르다`,
+        content: `너무 빨라요.`,
         ephemeral: true,
       });
     }
-    lastUsedAt.set(userId, now);
+
+    lastUsed.set(interaction.user.id, now);
 
     const channelId = interaction.channelId;
-    const userRun = getUserRunMap(userId);
 
-    if (userRun.has(channelId)) {
+    if (running.has(channelId)) {
       return interaction.reply({
-        content: "이미 하고있다",
+        content: "실행 중 입니다.",
         ephemeral: true,
       });
     }
 
-    // 진행 상태 저장
     const state = { stop: false };
-    userRun.set(channelId, state);
+    running.set(channelId, state);
 
     await interaction.reply({
-      content: `도배 시작한다`,
+      content: `도배 시작`,
       ephemeral: true,
     });
 
-    // ✅ setInterval 대신 순차 루프 (중간에 끊김 거의 없음)
     try {
       for (let i = 0; i < count; i++) {
-        const current = getUserRunMap(userId).get(channelId);
-        if (!current || current.stop) break;
+        if (state.stop) break;
 
         await safeSend(interaction, msg);
-
-        // 마지막엔 sleep 불필요
         if (i !== count - 1) await sleep(INTERVAL_MS);
       }
-    } catch (e) {
-      // 필요하면 로그 확인
-      console.error("[SendError]", e);
+    } catch (err) {
+      console.error("[SendError]", err);
     } finally {
-      // 종료 처리
-      const currentMap = getUserRunMap(userId);
-      currentMap.delete(channelId);
+      running.delete(channelId);
     }
   }
 
-  // ✅ /도배중지
+  // -------------------------
+  // /도배중지
+  // -------------------------
   if (interaction.commandName === "도배중지") {
-    const userRun = getUserRunMap(userId);
+    const state = running.get(interaction.channelId);
 
-    if (userRun.size === 0) {
+    if (!state) {
       return interaction.reply({
-        content: "이미 중지했다",
+        content: "진행 중인 도배가 없어요.",
         ephemeral: true,
       });
     }
 
-    // 이 유저가 진행 중인 전송 전부 stop
-    for (const state of userRun.values()) state.stop = true;
-    userRun.clear();
+    state.stop = true;
+    running.delete(interaction.channelId);
 
     return interaction.reply({
-      content: "도배 중지했다",
+      content: "도배를 중지했어요.",
       ephemeral: true,
     });
   }
