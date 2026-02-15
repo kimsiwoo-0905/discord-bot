@@ -6,7 +6,7 @@ const { REST, Routes } = require("discord.js");
 const commands = [
   {
     name: "도배",
-    description: "모달에서 메시지/횟수를 입력해 반복 전송합니다",
+    description: "메시지를 반복 전송합니다",
     type: 1,
     integration_types: [0, 1],
     contexts: [0, 1, 2],

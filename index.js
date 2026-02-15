@@ -12,7 +12,7 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const INTERVAL_MS = 500; // 2초 간격
+const INTERVAL_MS = 2000;     // 2초 간격
 const MAX_MESSAGE_LEN = 1500;
 const MAX_COUNT = 50;
 
@@ -32,8 +32,21 @@ function getUserRunMap(userId) {
   return m;
 }
 
-// ✅ 채널 접근 없이도 보내지도록 followUp만 사용 (Missing Access 우회)
-async function sendPublic(interaction, content) {
+/**
+ * ✅ 핵심: 가능하면 channel.send() (안정)
+ * ❌ 안 되면 followUp으로 fallback (Missing Access 우회)
+ */
+async function sendSmart(interaction, content) {
+  // 1) 먼저 채널로 시도
+  try {
+    if (interaction.channel) {
+      return await interaction.channel.send({ content });
+    }
+  } catch (e) {
+    // 채널 전송 실패하면 아래 followUp으로 넘어감
+  }
+
+  // 2) fallback: interaction followUp
   return interaction.followUp({ content, ephemeral: false });
 }
 
@@ -42,7 +55,7 @@ client.once("ready", () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  // 1) 슬래시 명령 처리
+  // 1) 슬래시 명령
   if (interaction.isChatInputCommand()) {
     const userId = interaction.user.id;
     const channelId = interaction.channelId;
@@ -95,7 +108,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // 2) 모달 제출 처리
+  // 2) 모달 제출
   if (interaction.isModalSubmit()) {
     if (interaction.customId !== "dobae_modal") return;
 
@@ -115,7 +128,7 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // ✅ 숫자만 허용
+    // ✅ 숫자만
     if (!/^\d+$/.test(countStr)) {
       return interaction.reply({
         content: "반복 횟수는 숫자만 입력해주세요. (1~50)",
@@ -153,12 +166,15 @@ client.on("interactionCreate", async (interaction) => {
         const current = getUserRunMap(userId).get(channelId);
         if (!current || current.stop) break;
 
-        await sendPublic(interaction, message);
+        try {
+          await sendSmart(interaction, message);
+        } catch (e) {
+          // 전송 실패해도 전체가 멈추지 않게: 로그만 남기고 계속
+          console.error("SEND ERROR:", e?.rawError?.message || e?.message || e);
+        }
 
         if (i !== count - 1) await sleep(INTERVAL_MS);
       }
-    } catch (e) {
-      console.error("SEND LOOP ERROR:", e?.message || e);
     } finally {
       getUserRunMap(userId).delete(channelId);
     }
