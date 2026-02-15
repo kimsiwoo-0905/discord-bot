@@ -54,7 +54,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (msg.length > MAX_MESSAGE_LEN) {
       return interaction.reply({
-        content: `1500자 이하로 작성해주세요)`,
+        content: `1500자 이하로 작성해주세요`,
         ephemeral: true,
       });
     }
@@ -97,7 +97,7 @@ client.on("interactionCreate", async (interaction) => {
 
     // 시작 안내 (여기서 reply 1회)
     await interaction.editReply(
-      `도배를 시작합니다.)`
+      `도배를 시작합니다.`
     );
 
     try {
