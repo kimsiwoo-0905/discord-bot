@@ -6,13 +6,14 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
+  PermissionsBitField,
 } = require("discord.js");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const INTERVAL_MS = 500; // 2초 간격
+const INTERVAL_MS = 2000; // 2초 간격
 const MAX_MESSAGE_LEN = 1500;
 const MAX_COUNT = 50;
 
@@ -22,6 +23,7 @@ const runningByUser = new Map();
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+
 function getUserRunMap(userId) {
   let m = runningByUser.get(userId);
   if (!m) {
@@ -31,16 +33,33 @@ function getUserRunMap(userId) {
   return m;
 }
 
-// ✅ 가능한 경우 channel.send (가장 안정적) → 실패하면 followUp으로 대체
+/**
+ * ✅ 가능한 경우: channel.send() (가장 안정)
+ * ❌ 안 되면: interaction.followUp() fallback
+ * - followUp이 중간에 막히면 ok:false로 반환해서 루프를 멈추고 이유를 표시
+ */
 async function sendSmart(interaction, content) {
+  // 1) 서버에서 봇이 "멤버"로 있고, 채널에 전송 권한이 있으면 channel.send 시도
   try {
-    if (interaction.channel) {
-      return await interaction.channel.send({ content });
+    if (interaction.guild && interaction.channel && interaction.guild.members?.me) {
+      const me = interaction.guild.members.me;
+      const perms = interaction.channel.permissionsFor(me);
+      if (perms?.has(PermissionsBitField.Flags.SendMessages)) {
+        const res = await interaction.channel.send({ content });
+        return { ok: true, via: "channel", res };
+      }
     }
   } catch (e) {
     // ignore and fallback
   }
-  return interaction.followUp({ content, ephemeral: false });
+
+  // 2) fallback: followUp
+  try {
+    const res = await interaction.followUp({ content, ephemeral: false });
+    return { ok: true, via: "followUp", res };
+  } catch (e) {
+    return { ok: false, via: "followUp", err: e };
+  }
 }
 
 client.once("ready", () => {
@@ -48,7 +67,7 @@ client.once("ready", () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  // 슬래시 명령
+  // 1) 슬래시 명령
   if (interaction.isChatInputCommand()) {
     const userId = interaction.user.id;
     const channelId = interaction.channelId;
@@ -101,7 +120,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // 모달 제출
+  // 2) 모달 제출
   if (interaction.isModalSubmit()) {
     if (interaction.customId !== "dobae_modal") return;
 
@@ -116,7 +135,7 @@ client.on("interactionCreate", async (interaction) => {
     }
     if (message.length > MAX_MESSAGE_LEN) {
       return interaction.reply({
-        content: `메시지는 ${MAX_MESSAGE_LEN}자 이내만 가능해요.`,
+        content: `메시지는 1500자 이내만 가능해요.`,
         ephemeral: true,
       });
     }
@@ -132,7 +151,7 @@ client.on("interactionCreate", async (interaction) => {
     const count = parseInt(countStr, 10);
     if (count < 1 || count > MAX_COUNT) {
       return interaction.reply({
-        content: `반복 횟수는 1~50 사이만 가능해요.`,
+        content: "반복 횟수는 1~50 사이만 가능해요.",
         ephemeral: true,
       });
     }
@@ -149,7 +168,7 @@ client.on("interactionCreate", async (interaction) => {
     userRun.set(channelId, state);
 
     await interaction.reply({
-      content: `도배를 시작합니다.`,
+      content: "도배를 시작합니다.",
       ephemeral: true,
     });
 
@@ -158,11 +177,27 @@ client.on("interactionCreate", async (interaction) => {
         const current = getUserRunMap(userId).get(channelId);
         if (!current || current.stop) break;
 
-        try {
-          console.log(`[SEND] ${i + 1}/${count} channel=${channelId}`);
-          await sendSmart(interaction, message);
-        } catch (e) {
-          console.error("SEND ERROR:", e?.rawError?.message || e?.message || e);
+        console.log(`[SEND] ${i + 1}/${count} channel=${channelId}`);
+
+        const result = await sendSmart(interaction, message);
+
+        if (!result.ok) {
+          const emsg =
+            result.err?.rawError?.message ||
+            result.err?.message ||
+            String(result.err);
+
+          console.error("SEND ERROR:", emsg);
+
+          // 사용자에게도 이유 표시(나만 보이게)
+          try {
+            await interaction.followUp({
+              content: `에러`,
+              ephemeral: true,
+            });
+          } catch {}
+
+          break;
         }
 
         if (i !== count - 1) await sleep(INTERVAL_MS);
