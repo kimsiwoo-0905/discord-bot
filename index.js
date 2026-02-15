@@ -11,23 +11,36 @@ const ALLOWED_USER_IDS = new Set([
   "1340579141770285118",
 ]);
 
-const MAX_COUNT = 50;
-const INTERVAL_MS = 500;     // ✅ 2초 간격
+const MAX_COUNT = 100;
+const INTERVAL_MS = 500;      // ✅ 2초 간격 (원하면 1000으로 바꿔도 됨)
 const MAX_MESSAGE_LEN = 1500;
 
-// 유저별 마지막 실행 시간(연타 방지)
-const lastUsedAt = new Map();        // userId -> timestamp(ms)
+// 유저별 마지막 실행 시간(명령 연타 방지)
+const lastUsedAt = new Map(); // userId -> timestamp
 
-// 유저별 진행 중 작업(여러 채널/DM에서 동시에 돌릴 수 있으니 channelId로 구분)
-const runningByUser = new Map();     // userId -> Map(channelId, { timer, interactionToken })
+// 유저별 진행 상태 (channelId 별로)
+const runningByUser = new Map(); // userId -> Map(channelId, { stop: boolean })
 
-function getUserRunningMap(userId) {
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function getUserRunMap(userId) {
   let m = runningByUser.get(userId);
   if (!m) {
     m = new Map();
     runningByUser.set(userId, m);
   }
   return m;
+}
+
+async function safeSend(interaction, content) {
+  // DM/서버 상관없이 채널을 확실히 가져와서 전송
+  const ch =
+    interaction.channel ??
+    (await interaction.client.channels.fetch(interaction.channelId));
+
+  return ch.send({ content });
 }
 
 client.once("ready", () => {
@@ -42,7 +55,7 @@ client.on("interactionCreate", async (interaction) => {
   // ✅ 화이트리스트 체크
   if (!ALLOWED_USER_IDS.has(userId)) {
     return interaction.reply({
-      content: "픽셜전용이다",
+      content: "픽셜 전용이다",
       ephemeral: true,
     });
   }
@@ -58,88 +71,83 @@ client.on("interactionCreate", async (interaction) => {
         ephemeral: true,
       });
     }
-
     if (count < 1 || count > MAX_COUNT) {
       return interaction.reply({
-        content: `개수는 50이 최대다`,
+        content: `너무 길다`,
         ephemeral: true,
       });
     }
 
-    // 유저별 쿨타임(명령 연타 방지)
+    // ✅ 유저별 쿨타임(명령 연타 방지)
     const now = Date.now();
     const last = lastUsedAt.get(userId) ?? 0;
     const diff = now - last;
     if (diff < INTERVAL_MS) {
       const left = ((INTERVAL_MS - diff) / 1000).toFixed(1);
       return interaction.reply({
-        content: `천천히 해라`,
+        content: `너무 빠르다`,
         ephemeral: true,
       });
     }
     lastUsedAt.set(userId, now);
 
     const channelId = interaction.channelId;
-    const userRun = getUserRunningMap(userId);
+    const userRun = getUserRunMap(userId);
 
-    // 같은 채널(또는 DM)에서 이미 돌고 있으면 막기
     if (userRun.has(channelId)) {
       return interaction.reply({
-        content: "이미 도배하고있다",
+        content: "이미 하고있다",
         ephemeral: true,
       });
     }
 
-    // 시작 안내(서버에서는 ephemeral로 보이고, DM에서는 그냥 보일 수 있음)
+    // 진행 상태 저장
+    const state = { stop: false };
+    userRun.set(channelId, state);
+
     await interaction.reply({
       content: `도배 시작한다`,
       ephemeral: true,
     });
 
-    let remaining = count;
+    // ✅ setInterval 대신 순차 루프 (중간에 끊김 거의 없음)
+    try {
+      for (let i = 0; i < count; i++) {
+        const current = getUserRunMap(userId).get(channelId);
+        if (!current || current.stop) break;
 
-    const timer = setInterval(async () => {
-      try {
-        const current = getUserRunningMap(userId);
-        if (!current.has(channelId)) return;
+        await safeSend(interaction, msg);
 
-        if (remaining <= 0) {
-          clearInterval(timer);
-          current.delete(channelId);
-          return;
-        }
-
-        remaining -= 1;
-
-        // ✅ DM에서도 안정적으로 전송되게 followUp 사용
-        await interaction.followUp({ content: msg });
-      } catch (e) {
-        clearInterval(timer);
-        getUserRunningMap(userId).delete(channelId);
+        // 마지막엔 sleep 불필요
+        if (i !== count - 1) await sleep(INTERVAL_MS);
       }
-    }, INTERVAL_MS);
-
-    userRun.set(channelId, { timer });
+    } catch (e) {
+      // 필요하면 로그 확인
+      console.error("[SendError]", e);
+    } finally {
+      // 종료 처리
+      const currentMap = getUserRunMap(userId);
+      currentMap.delete(channelId);
+    }
   }
 
-  // ✅ /도배중지 (본인이 돌리는 전송 전부 중지)
+  // ✅ /도배중지
   if (interaction.commandName === "도배중지") {
-    const userRun = getUserRunningMap(userId);
+    const userRun = getUserRunMap(userId);
 
     if (userRun.size === 0) {
       return interaction.reply({
-        content: "도배 안하고있다",
+        content: "이미 중지했다",
         ephemeral: true,
       });
     }
 
-    for (const { timer } of userRun.values()) {
-      clearInterval(timer);
-    }
+    // 이 유저가 진행 중인 전송 전부 stop
+    for (const state of userRun.values()) state.stop = true;
     userRun.clear();
 
     return interaction.reply({
-      content: "도배중지",
+      content: "도배 중지했다",
       ephemeral: true,
     });
   }
