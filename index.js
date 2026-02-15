@@ -5,12 +5,15 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const MAX_COUNT = 50;
-const INTERVAL_MS = 500; // 2초 간격
+const MAX_COUNT = 20;
+const INTERVAL_MS = 2000;     // 2초 간격
 const MAX_MESSAGE_LEN = 1500;
 
-const lastUsedAt = new Map();
-const runningByUser = new Map();
+// 유저별 마지막 실행 시간(명령 연타 방지)
+const lastUsedAt = new Map(); // userId -> timestamp
+
+// 유저별 진행 상태 (channelId 별)
+const runningByUser = new Map(); // userId -> Map(channelId, { stop: boolean })
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -25,32 +28,13 @@ function getUserRunMap(userId) {
   return m;
 }
 
+/**
+ * ✅ 핵심: channel.send() / channels.fetch() 절대 안 씀
+ * interaction.followUp()만 사용해서 Missing Access 우회
+ */
 async function safeSend(interaction, content) {
-  try {
-    if (interaction.channel) {
-      return await interaction.channel.send({ content });
-    }
-
-    const ch = await interaction.client.channels.fetch(interaction.channelId);
-    return await ch.send({ content });
-  } catch (e) {
-    const msg =
-      e?.rawError?.message ||
-      e?.message ||
-      "Unknown error";
-
-    console.error("SEND ERROR:", msg);
-
-    // 사용자에게도 이유 표시
-    try {
-      await interaction.followUp({
-        content: `전송 실패: ${msg}`,
-        ephemeral: true,
-      });
-    } catch {}
-
-    throw e;
-  }
+  // followUp은 공개 메시지로 보냄(ephemeral: false)
+  return interaction.followUp({ content, ephemeral: false });
 }
 
 client.once("ready", () => {
@@ -61,14 +45,16 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   const userId = interaction.user.id;
+  const channelId = interaction.channelId;
 
+  // ✅ /도배
   if (interaction.commandName === "도배") {
     const msg = interaction.options.getString("메시지", true);
     const count = interaction.options.getInteger("개수", true);
 
     if (msg.length > MAX_MESSAGE_LEN) {
       return interaction.reply({
-        content: `메시지가 너무 길어요.`,
+        content: `메시지가 너무 길어요. (${MAX_MESSAGE_LEN}자 이하)`,
         ephemeral: true,
       });
     }
@@ -80,6 +66,7 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
+    // ✅ 유저별 쿨타임(명령 연타 방지)
     const now = Date.now();
     const last = lastUsedAt.get(userId) ?? 0;
     const diff = now - last;
@@ -92,23 +79,26 @@ client.on("interactionCreate", async (interaction) => {
     }
     lastUsedAt.set(userId, now);
 
-    const channelId = interaction.channelId;
+    // 이미 진행 중이면 막기
     const userRun = getUserRunMap(userId);
-
     if (userRun.has(channelId)) {
       return interaction.reply({
-        content: "이미 여기에서 실행 중이에요. /도배중지로 멈출 수 있어요.",
+        content: "이미 여기에서 진행 중이에요. `/도배중지`로 멈춘 뒤 다시 실행해줘요.",
         ephemeral: true,
       });
     }
 
+    // 진행 상태 저장
     const state = { stop: false };
     userRun.set(channelId, state);
 
-    await interaction.reply({
-      content: `전송 시작! ${INTERVAL_MS / 1000}초 간격으로 ${count}번 보냅니다.`,
-      ephemeral: true,
-    });
+    // ✅ 3초 제한 피하려고 deferReply 사용 (공개 메시지로)
+    await interaction.deferReply({ ephemeral: false });
+
+    // 시작 안내 (여기서 reply 1회)
+    await interaction.editReply(
+      `전송 시작! ${INTERVAL_MS / 1000}초 간격으로 ${count}번 보낼게요. (멈추려면 /도배중지)`
+    );
 
     try {
       for (let i = 0; i < count; i++) {
@@ -120,13 +110,14 @@ client.on("interactionCreate", async (interaction) => {
         if (i !== count - 1) await sleep(INTERVAL_MS);
       }
     } catch (e) {
-      // safeSend에서 이미 이유 출력/표시함
-      console.error(e);
+      console.error("SEND LOOP ERROR:", e?.message || e);
+      // 에러나도 상태는 정리
     } finally {
       getUserRunMap(userId).delete(channelId);
     }
   }
 
+  // ✅ /도배중지
   if (interaction.commandName === "도배중지") {
     const userRun = getUserRunMap(userId);
 
@@ -137,6 +128,7 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
+    // 이 유저가 진행 중인 전송 전부 stop
     for (const state of userRun.values()) state.stop = true;
     userRun.clear();
 
