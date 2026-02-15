@@ -5,8 +5,8 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const MAX_COUNT = 20;
-const INTERVAL_MS = 2000;     // 2초 간격
+const MAX_COUNT = 50;
+const INTERVAL_MS = 800;   
 const MAX_MESSAGE_LEN = 1500;
 
 // 유저별 마지막 실행 시간(명령 연타 방지)
@@ -54,14 +54,14 @@ client.on("interactionCreate", async (interaction) => {
 
     if (msg.length > MAX_MESSAGE_LEN) {
       return interaction.reply({
-        content: `메시지가 너무 길어요. (${MAX_MESSAGE_LEN}자 이하)`,
+        content: `1500자 이하로 작성해주세요)`,
         ephemeral: true,
       });
     }
 
     if (count < 1 || count > MAX_COUNT) {
       return interaction.reply({
-        content: `개수는 1 ~ ${MAX_COUNT} 사이만 가능해요.`,
+        content: `개수는1~50로 해주세요.`,
         ephemeral: true,
       });
     }
@@ -73,7 +73,7 @@ client.on("interactionCreate", async (interaction) => {
     if (diff < INTERVAL_MS) {
       const left = ((INTERVAL_MS - diff) / 1000).toFixed(1);
       return interaction.reply({
-        content: `잠시 후 다시 시도해 주세요. (${left}초)`,
+        content: `잠시 후 다시 시도해 주세요.`,
         ephemeral: true,
       });
     }
@@ -83,7 +83,7 @@ client.on("interactionCreate", async (interaction) => {
     const userRun = getUserRunMap(userId);
     if (userRun.has(channelId)) {
       return interaction.reply({
-        content: "이미 여기에서 진행 중이에요. `/도배중지`로 멈춘 뒤 다시 실행해줘요.",
+        content: "이미 진행 중이에요.",
         ephemeral: true,
       });
     }
@@ -93,11 +93,11 @@ client.on("interactionCreate", async (interaction) => {
     userRun.set(channelId, state);
 
     // ✅ 3초 제한 피하려고 deferReply 사용 (공개 메시지로)
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply({ ephemeral: true });
 
     // 시작 안내 (여기서 reply 1회)
     await interaction.editReply(
-      `전송 시작! ${INTERVAL_MS / 1000}초 간격으로 ${count}번 보낼게요. (멈추려면 /도배중지)`
+      `도배를 시작합니다.)`
     );
 
     try {
@@ -123,7 +123,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (userRun.size === 0) {
       return interaction.reply({
-        content: "진행 중인 전송이 없어요.",
+        content: "진행 중인 도배가 없어요.",
         ephemeral: true,
       });
     }
@@ -133,7 +133,7 @@ client.on("interactionCreate", async (interaction) => {
     userRun.clear();
 
     return interaction.reply({
-      content: "전송을 중지했어요.",
+      content: "도배를 중지했어요.",
       ephemeral: true,
     });
   }
