@@ -12,7 +12,7 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const INTERVAL_MS = 2000;     // 2초 간격
+const INTERVAL_MS = 500; // 2초 간격
 const MAX_MESSAGE_LEN = 1500;
 const MAX_COUNT = 50;
 
@@ -22,7 +22,6 @@ const runningByUser = new Map();
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
-
 function getUserRunMap(userId) {
   let m = runningByUser.get(userId);
   if (!m) {
@@ -32,21 +31,15 @@ function getUserRunMap(userId) {
   return m;
 }
 
-/**
- * ✅ 핵심: 가능하면 channel.send() (안정)
- * ❌ 안 되면 followUp으로 fallback (Missing Access 우회)
- */
+// ✅ 가능한 경우 channel.send (가장 안정적) → 실패하면 followUp으로 대체
 async function sendSmart(interaction, content) {
-  // 1) 먼저 채널로 시도
   try {
     if (interaction.channel) {
       return await interaction.channel.send({ content });
     }
   } catch (e) {
-    // 채널 전송 실패하면 아래 followUp으로 넘어감
+    // ignore and fallback
   }
-
-  // 2) fallback: interaction followUp
   return interaction.followUp({ content, ephemeral: false });
 }
 
@@ -55,7 +48,7 @@ client.once("ready", () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  // 1) 슬래시 명령
+  // 슬래시 명령
   if (interaction.isChatInputCommand()) {
     const userId = interaction.user.id;
     const channelId = interaction.channelId;
@@ -64,7 +57,7 @@ client.on("interactionCreate", async (interaction) => {
       const userRun = getUserRunMap(userId);
       if (userRun.has(channelId)) {
         return interaction.reply({
-          content: "이미 여기에서 진행 중이에요. `/도배중지`로 멈춘 뒤 다시 해줘요.",
+          content: "진행 중입니다.",
           ephemeral: true,
         });
       }
@@ -108,7 +101,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // 2) 모달 제출
+  // 모달 제출
   if (interaction.isModalSubmit()) {
     if (interaction.customId !== "dobae_modal") return;
 
@@ -119,7 +112,7 @@ client.on("interactionCreate", async (interaction) => {
     const countStr = (interaction.fields.getTextInputValue("dobae_count") ?? "").trim();
 
     if (!message) {
-      return interaction.reply({ content: "메시지를 입력해줘요.", ephemeral: true });
+      return interaction.reply({ content: "메시지를 입력해주세요.", ephemeral: true });
     }
     if (message.length > MAX_MESSAGE_LEN) {
       return interaction.reply({
@@ -128,7 +121,7 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // ✅ 숫자만
+    // 숫자만 허용
     if (!/^\d+$/.test(countStr)) {
       return interaction.reply({
         content: "반복 횟수는 숫자만 입력해주세요. (1~50)",
@@ -139,7 +132,7 @@ client.on("interactionCreate", async (interaction) => {
     const count = parseInt(countStr, 10);
     if (count < 1 || count > MAX_COUNT) {
       return interaction.reply({
-        content: `반복 횟수는 1 ~ ${MAX_COUNT} 사이만 가능해요.`,
+        content: `반복 횟수는 1~50 사이만 가능해요.`,
         ephemeral: true,
       });
     }
@@ -147,7 +140,7 @@ client.on("interactionCreate", async (interaction) => {
     const userRun = getUserRunMap(userId);
     if (userRun.has(channelId)) {
       return interaction.reply({
-        content: "이미 여기에서 진행 중이에요. `/도배중지`로 멈춘 뒤 다시 해줘요.",
+        content: "이미 진행 중 입니다.",
         ephemeral: true,
       });
     }
@@ -155,9 +148,8 @@ client.on("interactionCreate", async (interaction) => {
     const state = { stop: false };
     userRun.set(channelId, state);
 
-    // ✅ 시작 안내는 나만 보이게
     await interaction.reply({
-      content: `전송 시작! ${INTERVAL_MS / 1000}초 간격으로 ${count}번 보낼게요. (멈추려면 /도배중지)`,
+      content: `도배를 시작합니다.`,
       ephemeral: true,
     });
 
@@ -167,9 +159,9 @@ client.on("interactionCreate", async (interaction) => {
         if (!current || current.stop) break;
 
         try {
+          console.log(`[SEND] ${i + 1}/${count} channel=${channelId}`);
           await sendSmart(interaction, message);
         } catch (e) {
-          // 전송 실패해도 전체가 멈추지 않게: 로그만 남기고 계속
           console.error("SEND ERROR:", e?.rawError?.message || e?.message || e);
         }
 
