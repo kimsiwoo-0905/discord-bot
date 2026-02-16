@@ -9,11 +9,10 @@ const {
   ActionRowBuilder,
 } = require("discord.js");
 
+// ✅ 최소 권한만 사용 (MESSAGE CONTENT 불필요)
 const client = new Client({
   intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent  // ✅ 추가
+    GatewayIntentBits.Guilds
   ],
 });
 
@@ -135,7 +134,7 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
 
-    // ✅ interaction.channel 직접 사용 (fetch 없이)
+    // ✅ interaction.channel 사용
     const channel = interaction.channel;
     
     if (!channel) {
@@ -155,7 +154,7 @@ client.on("interactionCreate", async (interaction) => {
         await channel.send(message);
         sentCount++;
         
-        // 5개마다 추가 대기
+        // 5개마다 추가 대기 (Rate Limit 방지)
         if (sentCount % 5 === 0 && i < count - 1) {
           await sleep(2000);
         } else {
@@ -177,7 +176,7 @@ client.on("interactionCreate", async (interaction) => {
         // 권한 에러
         if (error.code === 50001 || error.code === 50013) {
           await interaction.followUp({
-            content: "메시지를 보낼 권한이 없어요. 서버 관리자에게 문의하세요.",
+            content: "메시지를 보낼 권한이 없어요. 봇 권한을 확인해주세요.",
             ephemeral: true,
           });
           break;
@@ -186,7 +185,7 @@ client.on("interactionCreate", async (interaction) => {
         // 기타 에러
         if (i === 0) {
           await interaction.followUp({
-            content: `메시지 전송 중 오류: ${error.message}`,
+            content: `메시지 전송 중 오류가 발생했어요.`,
             ephemeral: true,
           });
         }
@@ -208,3 +207,20 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+```
+
+### 2️⃣ Discord 개발자 포털 재확인
+
+혹시 모르니 다시 한번 확인:
+
+1. https://discord.com/developers/applications
+2. 봇 선택 → **Bot** 탭
+3. **MESSAGE CONTENT INTENT** 켜기
+4. **Save Changes**
+5. **봇 재배포/재시작** (이게 중요!)
+
+### 3️⃣ 환경변수 확인
+
+`.env` 파일에 올바른 토큰이 있는지 확인:
+```
+DISCORD_TOKEN=your_actual_bot_token_here
