@@ -12,11 +12,12 @@ const {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages  // ✅ 이 권한 추가!
+    GatewayIntentBits.GuildMessages
   ],
 });
 
-const INTERVAL_MS = 500;
+// ✅ Rate Limit 고려: 최소 1초 간격 (Discord는 5메시지/5초 제한)
+const INTERVAL_MS = 1200;  // 500ms → 1200ms로 변경
 const MAX_MESSAGE_LEN = 1500;
 const MAX_COUNT = 50;
 
@@ -128,13 +129,13 @@ client.on("interactionCreate", async (interaction) => {
     const state = { stop: false };
     userRun.set(channelId, state);
 
-    // 시작 메시지는 나만 보이게
+    // 시작 메시지
     await interaction.reply({
-      content: `도배를 시작합니다. (${count}회)`,
+      content: `도배를 시작합니다. (${count}회, 약 ${Math.ceil(count * INTERVAL_MS / 1000)}초 소요)`,
       ephemeral: true,
     });
 
-    // ✅ 채널 객체 제대로 가져오기
+    // 채널 객체 가져오기
     let channel;
     try {
       channel = await client.channels.fetch(channelId);
@@ -146,16 +147,37 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
+    // ✅ Rate Limit 대응: 5메시지마다 추가 대기
+    let sentCount = 0;
+    
     for (let i = 0; i < count; i++) {
       const current = getUserRunMap(userId).get(channelId);
       if (!current || current.stop) break;
 
       try {
         await channel.send(message);
+        sentCount++;
+        
+        // 5개 보낼 때마다 추가로 2초 대기 (Rate Limit 방지)
+        if (sentCount % 5 === 0 && i < count - 1) {
+          await sleep(2000);
+        } else {
+          await sleep(INTERVAL_MS);
+        }
+        
       } catch (error) {
         console.error(`메시지 전송 실패 (${i + 1}/${count}):`, error);
         
-        // 에러 발생 시 사용자에게 알림 (처음 한 번만)
+        // Rate Limit 에러인 경우
+        if (error.code === 429) {
+          const retryAfter = error.retry_after || 5000;
+          console.log(`Rate limit 도달. ${retryAfter}ms 대기 중...`);
+          await sleep(retryAfter);
+          i--; // 다시 시도
+          continue;
+        }
+        
+        // 기타 에러
         if (i === 0) {
           await interaction.followUp({
             content: "메시지 전송 중 오류가 발생했어요. 봇 권한을 확인해주세요.",
@@ -164,8 +186,6 @@ client.on("interactionCreate", async (interaction) => {
         }
         break;
       }
-
-      await sleep(INTERVAL_MS);
     }
 
     userRun.delete(channelId);
@@ -173,7 +193,7 @@ client.on("interactionCreate", async (interaction) => {
     // 완료 메시지
     try {
       await interaction.followUp({
-        content: "도배 완료!",
+        content: `도배 완료! (총 ${sentCount}개 전송)`,
         ephemeral: true,
       });
     } catch (error) {
