@@ -9,11 +9,8 @@ const {
   ActionRowBuilder,
 } = require("discord.js");
 
-// ✅ 최소 권한만 사용 (MESSAGE CONTENT 불필요)
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds
-  ],
+  intents: [GatewayIntentBits.Guilds],
 });
 
 const INTERVAL_MS = 1200;
@@ -40,7 +37,6 @@ client.once("ready", () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  // 슬래시 명령
   if (interaction.isChatInputCommand()) {
     const userId = interaction.user.id;
     const channelId = interaction.channelId;
@@ -88,7 +84,9 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      for (const state of userRun.values()) state.stop = true;
+      for (const state of userRun.values()) {
+        state.stop = true;
+      }
       userRun.clear();
 
       return interaction.reply({
@@ -98,7 +96,6 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // 모달 제출
   if (interaction.isModalSubmit()) {
     if (interaction.customId !== "dobae_modal") return;
 
@@ -119,7 +116,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (count < 1 || count > MAX_COUNT) {
       return interaction.reply({
-        content: `1~50 사이 숫자만 가능해요.`,
+        content: "1~50 사이 숫자만 가능해요.",
         ephemeral: true,
       });
     }
@@ -128,15 +125,13 @@ client.on("interactionCreate", async (interaction) => {
     const state = { stop: false };
     userRun.set(channelId, state);
 
-    // 시작 메시지
     await interaction.reply({
-      content: `도배를 시작합니다. (${count}회, 약 ${Math.ceil(count * INTERVAL_MS / 1000)}초 소요)`,
+      content: `도배를 시작합니다. (${count}회)`,
       ephemeral: true,
     });
 
-    // ✅ interaction.channel 사용
     const channel = interaction.channel;
-    
+
     if (!channel) {
       return interaction.followUp({
         content: "채널 정보를 가져올 수 없어요.",
@@ -145,7 +140,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     let sentCount = 0;
-    
+
     for (let i = 0; i < count; i++) {
       const current = getUserRunMap(userId).get(channelId);
       if (!current || current.stop) break;
@@ -153,18 +148,15 @@ client.on("interactionCreate", async (interaction) => {
       try {
         await channel.send(message);
         sentCount++;
-        
-        // 5개마다 추가 대기 (Rate Limit 방지)
+
         if (sentCount % 5 === 0 && i < count - 1) {
           await sleep(2000);
         } else {
           await sleep(INTERVAL_MS);
         }
-        
       } catch (error) {
         console.error(`메시지 전송 실패 (${i + 1}/${count}):`, error);
-        
-        // Rate Limit 처리
+
         if (error.code === 429) {
           const retryAfter = error.retry_after || 5000;
           console.log(`Rate limit 도달. ${retryAfter}ms 대기 중...`);
@@ -172,20 +164,18 @@ client.on("interactionCreate", async (interaction) => {
           i--;
           continue;
         }
-        
-        // 권한 에러
+
         if (error.code === 50001 || error.code === 50013) {
           await interaction.followUp({
-            content: "메시지를 보낼 권한이 없어요. 봇 권한을 확인해주세요.",
+            content: "메시지를 보낼 권한이 없어요.",
             ephemeral: true,
           });
           break;
         }
-        
-        // 기타 에러
+
         if (i === 0) {
           await interaction.followUp({
-            content: `메시지 전송 중 오류가 발생했어요.`,
+            content: "메시지 전송 중 오류가 발생했어요.",
             ephemeral: true,
           });
         }
@@ -194,7 +184,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     userRun.delete(channelId);
-    
+
     try {
       await interaction.followUp({
         content: `도배 완료! (총 ${sentCount}개 전송)`,
@@ -207,20 +197,3 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-```
-
-### 2️⃣ Discord 개발자 포털 재확인
-
-혹시 모르니 다시 한번 확인:
-
-1. https://discord.com/developers/applications
-2. 봇 선택 → **Bot** 탭
-3. **MESSAGE CONTENT INTENT** 켜기
-4. **Save Changes**
-5. **봇 재배포/재시작** (이게 중요!)
-
-### 3️⃣ 환경변수 확인
-
-`.env` 파일에 올바른 토큰이 있는지 확인:
-```
-DISCORD_TOKEN=your_actual_bot_token_here
