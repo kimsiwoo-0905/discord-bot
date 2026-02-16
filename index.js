@@ -34,9 +34,17 @@ function getUserRunMap(userId) {
 
 client.once("ready", () => {
   console.log(`로그인됨: ${client.user.tag}`);
+  console.log(`봇 ID: ${client.user.id}`);
 });
 
 client.on("interactionCreate", async (interaction) => {
+  // ✅ 디버그: interaction 정보 출력
+  console.log("=== Interaction 정보 ===");
+  console.log("Type:", interaction.type);
+  console.log("Channel ID:", interaction.channelId);
+  console.log("Guild ID:", interaction.guildId);
+  console.log("interaction.channel:", interaction.channel ? "있음" : "없음");
+  
   if (interaction.isChatInputCommand()) {
     const userId = interaction.user.id;
     const channelId = interaction.channelId;
@@ -102,6 +110,11 @@ client.on("interactionCreate", async (interaction) => {
     const userId = interaction.user.id;
     const channelId = interaction.channelId;
 
+    // ✅ 디버그 출력
+    console.log("=== 모달 제출 ===");
+    console.log("User ID:", userId);
+    console.log("Channel ID:", channelId);
+
     const message = interaction.fields.getTextInputValue("dobae_message").trim();
     const countStr = interaction.fields.getTextInputValue("dobae_count").trim();
 
@@ -130,46 +143,81 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
 
-    // ✅ 여러 방법으로 채널 가져오기 시도
-    let channel = null;
-
-    // 방법 1: interaction.channel
-    if (interaction.channel) {
-      channel = interaction.channel;
-      console.log("채널 획득 방법: interaction.channel");
-    }
-
-    // 방법 2: guild.channels.cache
-    if (!channel && interaction.guild) {
-      channel = interaction.guild.channels.cache.get(channelId);
-      console.log("채널 획득 방법: guild.channels.cache");
-    }
-
-    // 방법 3: client.channels.cache
-    if (!channel) {
-      channel = client.channels.cache.get(channelId);
-      console.log("채널 획득 방법: client.channels.cache");
-    }
-
-    // 방법 4: fetch로 가져오기
-    if (!channel) {
-      try {
-        channel = await client.channels.fetch(channelId);
-        console.log("채널 획득 방법: client.channels.fetch");
-      } catch (error) {
-        console.error("채널 fetch 실패:", error);
+    // ✅ 웹훅 생성 방식으로 변경 (가장 확실한 방법)
+    let webhook = null;
+    
+    try {
+      // interaction에서 직접 웹훅 가져오기
+      const webhooks = await interaction.channel.fetchWebhooks();
+      webhook = webhooks.find(wh => wh.owner.id === client.user.id);
+      
+      // 웹훅이 없으면 생성
+      if (!webhook) {
+        webhook = await interaction.channel.createWebhook({
+          name: '도배봇',
+          reason: '메시지 전송용',
+        });
+        console.log("웹훅 생성 완료");
+      } else {
+        console.log("기존 웹훅 사용");
       }
+    } catch (error) {
+      console.error("웹훅 생성/조회 실패:", error);
+      
+      // 웹훅 실패 시 일반 메시지 전송 시도
+      const channel = interaction.channel;
+      
+      if (!channel) {
+        return interaction.followUp({
+          content: "채널 정보를 가져올 수 없어요. 봇에게 '채널 보기', '메시지 보내기', '웹훅 관리' 권한을 주세요.",
+          ephemeral: true,
+        });
+      }
+
+      // 일반 전송 방식
+      let sentCount = 0;
+
+      for (let i = 0; i < count; i++) {
+        const current = getUserRunMap(userId).get(channelId);
+        if (!current || current.stop) break;
+
+        try {
+          await channel.send(message);
+          sentCount++;
+
+          if (sentCount % 5 === 0 && i < count - 1) {
+            await sleep(2000);
+          } else {
+            await sleep(INTERVAL_MS);
+          }
+        } catch (sendError) {
+          console.error(`메시지 전송 실패:`, sendError);
+          
+          if (i === 0) {
+            await interaction.followUp({
+              content: `메시지 전송 실패: ${sendError.message}`,
+              ephemeral: true,
+            });
+          }
+          break;
+        }
+      }
+
+      userRun.delete(channelId);
+
+      try {
+        await interaction.followUp({
+          content: `완료! (총 ${sentCount}개 전송)`,
+          ephemeral: true,
+        });
+      } catch (e) {
+        console.log("완료 메시지 전송 실패");
+      }
+      
+      return;
     }
 
-    // 모든 방법 실패
-    if (!channel) {
-      console.error(`채널을 찾을 수 없음. channelId: ${channelId}`);
-      return interaction.followUp({
-        content: "채널 정보를 가져올 수 없어요. 봇 권한을 확인해주세요.",
-        ephemeral: true,
-      });
-    }
-
+    // ✅ 웹훅으로 메시지 전송
     let sentCount = 0;
 
     for (let i = 0; i < count; i++) {
@@ -177,8 +225,14 @@ client.on("interactionCreate", async (interaction) => {
       if (!current || current.stop) break;
 
       try {
-        await channel.send(message);
+        await webhook.send({
+          content: message,
+          username: interaction.user.username,
+          avatarURL: interaction.user.displayAvatarURL(),
+        });
+        
         sentCount++;
+        console.log(`메시지 전송 ${sentCount}/${count}`);
 
         if (sentCount % 5 === 0 && i < count - 1) {
           await sleep(2000);
@@ -186,27 +240,19 @@ client.on("interactionCreate", async (interaction) => {
           await sleep(INTERVAL_MS);
         }
       } catch (error) {
-        console.error(`메시지 전송 실패 (${i + 1}/${count}):`, error);
+        console.error(`웹훅 전송 실패 (${i + 1}/${count}):`, error);
 
         if (error.code === 429) {
           const retryAfter = error.retry_after || 5000;
-          console.log(`Rate limit 도달. ${retryAfter}ms 대기 중...`);
+          console.log(`Rate limit. ${retryAfter}ms 대기...`);
           await sleep(retryAfter);
           i--;
           continue;
         }
 
-        if (error.code === 50001 || error.code === 50013) {
-          await interaction.followUp({
-            content: "메시지를 보낼 권한이 없어요. 서버에서 봇 권한을 확인해주세요.",
-            ephemeral: true,
-          });
-          break;
-        }
-
         if (i === 0) {
           await interaction.followUp({
-            content: `메시지 전송 중 오류가 발생했어요: ${error.message}`,
+            content: `전송 실패: ${error.message}`,
             ephemeral: true,
           });
         }
