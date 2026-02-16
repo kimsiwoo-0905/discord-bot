@@ -8,232 +8,184 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  PermissionsBitField,
 } = require("discord.js");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const INTERVAL_MS = 500; // 버튼 연타 방지(너무 빠르면 무시)
+// 안전장치
+const COOLDOWN_MS = 10_000;     // 10초 쿨타임
+const MAX_PER_SESSION = 5;      // 세션당 최대 5회만
 const MAX_MESSAGE_LEN = 1500;
-const MAX_PER_SESSION = 200; // 한 세션에서 최대 전송 횟수
 
-// userId -> Map(channelId -> state)
-const runningByUser = new Map();
-
-function getUserRunMap(userId) {
-  let m = runningByUser.get(userId);
-  if (!m) {
-    m = new Map();
-    runningByUser.set(userId, m);
-  }
-  return m;
-}
+const sessions = new Map(); // key: `${userId}:${channelId}` -> { message, lastAt, count }
 
 client.once("ready", () => {
   console.log(`로그인됨: ${client.user.tag}`);
 });
 
+function keyOf(userId, channelId) {
+  return `${userId}:${channelId}`;
+}
+
 client.on("interactionCreate", async (interaction) => {
-  // 1) 슬래시 명령
+  // 슬래시 명령: /테스트전송
   if (interaction.isChatInputCommand()) {
-    const userId = interaction.user.id;
-    const channelId = interaction.channelId;
+    if (interaction.commandName !== "테스트전송") return;
 
-    if (interaction.commandName === "도배") {
-      // 같은 채널에 이미 세션 있으면 막기(원하면 이 체크 삭제 가능)
-      const userRun = getUserRunMap(userId);
-      if (userRun.has(channelId)) {
-        return interaction.reply({
-          content: "이미 이 채널에서 세션이 열려 있어요. 버튼 메시지에서 종료 후 다시 열어주세요.",
-          ephemeral: true,
-        });
-      }
+    const modal = new ModalBuilder()
+      .setCustomId("one_send_modal")
+      .setTitle("전송 테스트");
 
-      const modal = new ModalBuilder()
-        .setCustomId("dobae_modal")
-        .setTitle("메시지 설정");
+    const msgInput = new TextInputBuilder()
+      .setCustomId("one_send_message")
+      .setLabel("보낼 메시지 (1500자 이내)")
+      .setStyle(TextInputStyle.Paragraph)
+      .setMaxLength(MAX_MESSAGE_LEN)
+      .setRequired(true);
 
-      const msgInput = new TextInputBuilder()
-        .setCustomId("dobae_message")
-        .setLabel("보낼 메시지 (1500자 이내)")
-        .setStyle(TextInputStyle.Paragraph)
-        .setMaxLength(MAX_MESSAGE_LEN)
-        .setRequired(true);
-
-      modal.addComponents(new ActionRowBuilder().addComponents(msgInput));
-      return interaction.showModal(modal);
-    }
-
-    if (interaction.commandName === "도배중지") {
-      const userRun = getUserRunMap(userId);
-      if (userRun.size === 0) {
-        return interaction.reply({
-          content: "진행 중인 세션이 없어요.",
-          ephemeral: true,
-        });
-      }
-      userRun.clear();
-      return interaction.reply({
-        content: "세션을 전부 종료했어요.",
-        ephemeral: true,
-      });
-    }
+    modal.addComponents(new ActionRowBuilder().addComponents(msgInput));
+    return interaction.showModal(modal);
   }
 
-  // 2) 모달 제출
+  // 모달 제출
   if (interaction.isModalSubmit()) {
-    if (interaction.customId !== "dobae_modal") return;
+    if (interaction.customId !== "one_send_modal") return;
 
     const userId = interaction.user.id;
     const channelId = interaction.channelId;
 
-    const message = interaction.fields.getTextInputValue("dobae_message").trim();
+    const message = interaction.fields.getTextInputValue("one_send_message").trim();
     if (!message) {
       return interaction.reply({ content: "메시지를 입력해주세요.", ephemeral: true });
     }
 
-    const userRun = getUserRunMap(userId);
-
-    const state = {
+    // 세션 저장
+    sessions.set(keyOf(userId, channelId), {
       message,
-      lastSentAt: 0,
-      sentCount: 0,
-    };
-    userRun.set(channelId, state);
+      lastAt: 0,
+      count: 0,
+    });
 
     const sendBtn = new ButtonBuilder()
-      .setCustomId(`dobae_send:${userId}:${channelId}`)
-      .setLabel("전송")
+      .setCustomId(`one_send:${userId}:${channelId}`)
+      .setLabel("1회 전송")
       .setStyle(ButtonStyle.Primary);
 
-    const stopBtn = new ButtonBuilder()
-      .setCustomId(`dobae_stop:${userId}:${channelId}`)
+    const endBtn = new ButtonBuilder()
+      .setCustomId(`one_end:${userId}:${channelId}`)
       .setLabel("종료")
       .setStyle(ButtonStyle.Danger);
 
-    const row = new ActionRowBuilder().addComponents(sendBtn, stopBtn);
-
     return interaction.reply({
-      content: `✅ 설정 완료\n- 버튼을 누를 때마다 1회 전송됩니다.\n- 전송 횟수: 0/${MAX_PER_SESSION}`,
-      components: [row],
+      content:
+        "✅ 준비 완료\n" +
+        `- 1회 전송 버튼을 누르면 한 번만 전송을 시도합니다.\n` +
+        `- 쿨타임: ${COOLDOWN_MS / 1000}s, 세션 최대: ${MAX_PER_SESSION}회`,
+      components: [new ActionRowBuilder().addComponents(sendBtn, endBtn)],
       ephemeral: true,
     });
   }
 
-  // 3) 버튼 처리
+  // 버튼
   if (interaction.isButton()) {
-    const [kind, ownerId, channelId] = interaction.customId.split(":");
+    const parts = interaction.customId.split(":");
+    const kind = parts[0];
+    const ownerId = parts[1];
+    const channelId = parts[2];
+
     if (!kind || !ownerId || !channelId) return;
 
-    // 버튼은 설정한 본인만 누를 수 있게
+    // 본인만 사용
     if (interaction.user.id !== ownerId) {
       return interaction.reply({ content: "이 버튼은 만든 사람만 사용할 수 있어요.", ephemeral: true });
     }
 
-    const userRun = getUserRunMap(ownerId);
-    const state = userRun.get(channelId);
+    const k = keyOf(ownerId, channelId);
+    const state = sessions.get(k);
 
-    // 세션 없으면 버튼 비활성화 안내
     if (!state) {
-      // ephemeral 메시지는 남아있을 수 있으니 업데이트로 정리
-      try {
-        const disabledRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId("dobae_disabled_send")
-            .setLabel("전송")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(true),
-          new ButtonBuilder()
-            .setCustomId("dobae_disabled_stop")
-            .setLabel("종료됨")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(true)
-        );
-        return interaction.update({
-          content: "이 세션은 이미 종료되었어요.",
-          components: [disabledRow],
-        });
-      } catch {
-        // update 실패 시 조용히 종료
-        return;
-      }
+      return interaction.update({ content: "세션이 없거나 이미 종료됐어요.", components: [] });
     }
 
-    // 종료 버튼
-    if (kind === "dobae_stop") {
-      userRun.delete(channelId);
+    if (kind === "one_end") {
+      sessions.delete(k);
+      return interaction.update({ content: "🛑 세션 종료", components: [] });
+    }
 
-      const disabledRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("dobae_disabled_send")
-          .setLabel("전송")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(true),
-        new ButtonBuilder()
-          .setCustomId("dobae_disabled_stop")
-          .setLabel("종료됨")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(true)
-      );
+    if (kind !== "one_send") return;
 
-      return interaction.update({
-        content: "🛑 세션을 종료했어요.",
-        components: [disabledRow],
+    const now = Date.now();
+
+    // 쿨타임
+    if (now - state.lastAt < COOLDOWN_MS) {
+      return interaction.reply({
+        content: `⏳ 너무 빨라요. ${(COOLDOWN_MS - (now - state.lastAt)) / 1000}s 뒤에 다시 눌러주세요.`,
+        ephemeral: true,
       });
     }
 
-    // 전송 버튼
-    if (kind === "dobae_send") {
-      const now = Date.now();
+    // 세션 최대 횟수
+    if (state.count >= MAX_PER_SESSION) {
+      sessions.delete(k);
+      return interaction.update({
+        content: `🛑 세션 최대 전송 횟수(${MAX_PER_SESSION}) 도달로 종료`,
+        components: [],
+      });
+    }
 
-      // 너무 빠른 연타는 무시(요청하신 “너무 자주 눌렀어요” 같은 문구는 안 띄움)
-      if (now - state.lastSentAt < INTERVAL_MS) {
-        return interaction.deferUpdate();
-      }
+    state.lastAt = now;
 
-      if (state.sentCount >= MAX_PER_SESSION) {
-        userRun.delete(channelId);
+    try {
+      // 채널 fetch
+      const ch = await client.channels.fetch(channelId);
 
-        const disabledRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId("dobae_disabled_send")
-            .setLabel("한도 도달")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(true),
-          new ButtonBuilder()
-            .setCustomId("dobae_disabled_stop")
-            .setLabel("종료됨")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(true)
-        );
-
+      if (!ch || !ch.isTextBased()) {
+        sessions.delete(k);
         return interaction.update({
-          content: `🛑 세션 최대 전송 횟수(${MAX_PER_SESSION})에 도달해서 종료했어요.`,
-          components: [disabledRow],
-        });
-      }
-
-      state.lastSentAt = now;
-
-      // 실제 메시지 전송(권한 문제면 catch)
-      try {
-        await interaction.channel.send(state.message);
-        state.sentCount += 1;
-      } catch (e) {
-        // 권한/제한 문제면 세션 종료
-        userRun.delete(channelId);
-        return interaction.update({
-          content: "❌ 전송 실패(권한/채널 제한/봇 권한 문제). 세션을 종료했어요.",
+          content: "❌ 이 채널은 텍스트 채널이 아니라서 전송할 수 없어요.",
           components: [],
         });
       }
 
-      // 버튼 메시지(에페메랄) 카운트 업데이트
-      const row = interaction.message.components?.[0];
+      // 권한 진단(길드 채널일 때만 의미 있음)
+      if (interaction.guild && "permissionsFor" in ch) {
+        const me = interaction.guild.members.me;
+        if (me) {
+          const perms = ch.permissionsFor(me);
+          const need = [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+          ];
+
+          const missing = need.filter((p) => !perms?.has(p));
+          if (missing.length) {
+            sessions.delete(k);
+            return interaction.update({
+              content:
+                "❌ 권한 부족으로 전송 불가\n" +
+                `- 필요한 권한: ViewChannel, SendMessages\n` +
+                `- 현재 누락: ${missing.map(String).join(", ")}`,
+              components: [],
+            });
+          }
+        }
+      }
+
+      await ch.send(state.message);
+      state.count += 1;
+
       return interaction.update({
-        content: `✅ 전송됨\n- 전송 횟수: ${state.sentCount}/${MAX_PER_SESSION}`,
-        components: row ? [row] : [],
+        content: `✅ 전송 성공 (${state.count}/${MAX_PER_SESSION})`,
+        components: interaction.message.components,
+      });
+    } catch (e) {
+      sessions.delete(k);
+      return interaction.update({
+        content: `❌ 전송 실패\n에러: ${e?.message || String(e)}`,
+        components: [],
       });
     }
   }
