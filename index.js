@@ -63,7 +63,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const countInput = new TextInputBuilder()
         .setCustomId("dobae_count")
-        .setLabel("반복 횟수 (숫자만 1~50)")
+        .setLabel("반복 횟수 (숫자만 1~5)")
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
 
@@ -115,7 +115,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (count < 1 || count > MAX_COUNT) {
       return interaction.reply({
-        content: `1~50 사이 숫자만 가능해요.`,
+        content: `1~5 사이 숫자만 가능해요.`,
         ephemeral: true,
       });
     }
