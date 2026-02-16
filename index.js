@@ -130,11 +130,42 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
 
-    const channel = interaction.channel;
+    // ✅ 여러 방법으로 채널 가져오기 시도
+    let channel = null;
 
+    // 방법 1: interaction.channel
+    if (interaction.channel) {
+      channel = interaction.channel;
+      console.log("채널 획득 방법: interaction.channel");
+    }
+
+    // 방법 2: guild.channels.cache
+    if (!channel && interaction.guild) {
+      channel = interaction.guild.channels.cache.get(channelId);
+      console.log("채널 획득 방법: guild.channels.cache");
+    }
+
+    // 방법 3: client.channels.cache
     if (!channel) {
+      channel = client.channels.cache.get(channelId);
+      console.log("채널 획득 방법: client.channels.cache");
+    }
+
+    // 방법 4: fetch로 가져오기
+    if (!channel) {
+      try {
+        channel = await client.channels.fetch(channelId);
+        console.log("채널 획득 방법: client.channels.fetch");
+      } catch (error) {
+        console.error("채널 fetch 실패:", error);
+      }
+    }
+
+    // 모든 방법 실패
+    if (!channel) {
+      console.error(`채널을 찾을 수 없음. channelId: ${channelId}`);
       return interaction.followUp({
-        content: "채널 정보를 가져올 수 없어요.",
+        content: "채널 정보를 가져올 수 없어요. 봇 권한을 확인해주세요.",
         ephemeral: true,
       });
     }
@@ -167,7 +198,7 @@ client.on("interactionCreate", async (interaction) => {
 
         if (error.code === 50001 || error.code === 50013) {
           await interaction.followUp({
-            content: "메시지를 보낼 권한이 없어요.",
+            content: "메시지를 보낼 권한이 없어요. 서버에서 봇 권한을 확인해주세요.",
             ephemeral: true,
           });
           break;
@@ -175,7 +206,7 @@ client.on("interactionCreate", async (interaction) => {
 
         if (i === 0) {
           await interaction.followUp({
-            content: "메시지 전송 중 오류가 발생했어요.",
+            content: `메시지 전송 중 오류가 발생했어요: ${error.message}`,
             ephemeral: true,
           });
         }
