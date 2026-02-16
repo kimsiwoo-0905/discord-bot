@@ -7,17 +7,17 @@ const {
   TextInputStyle,
   ActionRowBuilder,
   ChannelType,
+  PermissionsBitField,
 } = require("discord.js");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
 });
 
-const INTERVAL_MS = 500;
+const INTERVAL_MS = 2000;
 const MAX_MESSAGE_LEN = 1500;
 const MAX_COUNT = 50;
 
-// userId -> Map(channelId, { stop: boolean })
 const runningByUser = new Map();
 
 function sleep(ms) {
@@ -33,26 +33,25 @@ function getUserRunMap(userId) {
   return m;
 }
 
-/**
- * ✅ 반복 전송은 "채널 메시지 send"로만 보냄 (followUp 제한 회피)
- * - 서버: interaction.channel.send()
- * - DM: user.createDM()로 DM 채널 만든 뒤 send()
- */
-async function sendByChannel(interaction, content) {
-  // 1) DM이면: 사용자 DM 채널로 보내기
+function hasSendPerms(interaction) {
+  if (!interaction.guild || !interaction.channel || !interaction.guild.members?.me) return false;
+  const me = interaction.guild.members.me;
+  const perms = interaction.channel.permissionsFor(me);
+  return !!perms?.has(PermissionsBitField.Flags.SendMessages);
+}
+
+async function sendInPlace(interaction, content) {
+  // DM은 createDM으로 send
   if (interaction.channel?.type === ChannelType.DM) {
     const dm = await interaction.user.createDM();
     return dm.send({ content });
   }
 
-  // 2) 서버/기타면: 현재 채널로 보내기
-  if (interaction.channel) {
-    return interaction.channel.send({ content });
+  // 서버는 channel.send (봇 초대 + 권한 필요)
+  if (!hasSendPerms(interaction)) {
+    throw new Error("SERVER_SEND_NOT_ALLOWED");
   }
-
-  // 3) 혹시 channel 객체가 없으면 fetch 후 send
-  const ch = await interaction.client.channels.fetch(interaction.channelId);
-  return ch.send({ content });
+  return interaction.channel.send({ content });
 }
 
 client.once("ready", () => {
@@ -60,7 +59,6 @@ client.once("ready", () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  // 1) 슬래시 명령
   if (interaction.isChatInputCommand()) {
     const userId = interaction.user.id;
     const channelId = interaction.channelId;
@@ -71,9 +69,7 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({ content: "진행 중입니다.", ephemeral: true });
       }
 
-      const modal = new ModalBuilder()
-        .setCustomId("dobae_modal")
-        .setTitle("도배 설정");
+      const modal = new ModalBuilder().setCustomId("dobae_modal").setTitle("도배 설정");
 
       const msgInput = new TextInputBuilder()
         .setCustomId("dobae_message")
@@ -86,7 +82,8 @@ client.on("interactionCreate", async (interaction) => {
         .setCustomId("dobae_count")
         .setLabel("반복 횟수 (숫자만, 1~50)")
         .setStyle(TextInputStyle.Short)
-            .setRequired(true);
+        .setPlaceholder("예: 10")
+        .setRequired(true);
 
       modal.addComponents(
         new ActionRowBuilder().addComponents(msgInput),
@@ -109,7 +106,6 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // 2) 모달 제출
   if (interaction.isModalSubmit()) {
     if (interaction.customId !== "dobae_modal") return;
 
@@ -138,28 +134,43 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "이미 진행 중 입니다.", ephemeral: true });
     }
 
-    const state = { stop: false };
-    userRun.set(channelId, state);
+    userRun.set(channelId, { stop: false });
 
-    // ✅ 시작 안내는 followUp 제한 안 걸리게 reply 1번만(나만)
-    await interaction.reply({ content: `도배를 시작합니다.`, ephemeral: true });
+    // 시작 안내는 나만 보이게 1번만
+    await interaction.reply({ content: `전송 시작! (${count}회, 2초 간격)`, ephemeral: true });
 
     try {
+      // 서버면 미리 권한 체크해서 바로 안내
+      if (interaction.guild && !hasSendPerms(interaction)) {
+        await interaction.followUp({
+          content:
+            "이 서버/채널에서 봇이 메시지를 보낼 권한이 없어요.\n" +
+            "✅ 해결: 봇을 **bot 초대 링크**로 서버에 초대하고, 해당 채널에서 **Send Messages / View Channel** 권한을 주세요.",
+          ephemeral: true,
+        });
+        return;
+      }
+
       for (let i = 0; i < count; i++) {
         const current = getUserRunMap(userId).get(channelId);
         if (!current || current.stop) break;
 
-        try {
-          console.log(`[SEND] ${i + 1}/${count} channel=${channelId}`);
-          await sendByChannel(interaction, message);
-        } catch (e) {
-          const emsg = e?.rawError?.message || e?.message || String(e);
-          console.error("SEND ERROR:", emsg);
+        console.log(`[SEND] ${i + 1}/${count} channel=${channelId}`);
 
-          // 에러 안내는 1번만(나만)
-          try {
-            await interaction.followUp({ content: `에러111`, ephemeral: true });
-          } catch {}
+        try {
+          await sendInPlace(interaction, message);
+        } catch (e) {
+          if (e?.message === "SERVER_SEND_NOT_ALLOWED") {
+            await interaction.followUp({
+              content:
+                "전송이 막혔어요: 이 채널에서 봇이 메시지 보낼 권한이 없어요.\n" +
+                "채널 권한(View Channel / Send Messages)을 확인해주세요.",
+              ephemeral: true,
+            });
+          } else {
+            const emsg = e?.rawError?.message || e?.message || String(e);
+            await interaction.followUp({ content: `전송 실패: ${emsg}`, ephemeral: true });
+          }
           break;
         }
 
