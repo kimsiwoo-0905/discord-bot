@@ -130,11 +130,25 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
 
-    // ✅ followUp 말고 채널에 직접 전송 (50개까지 정상)
-    const channel = await interaction.client.channels.fetch(channelId);
+    // ✅ 채널에 직접 전송
+    let channel;
+    try {
+      channel = await interaction.client.channels.fetch(channelId);
+    } catch (e) {
+      console.error("[도배] 채널 fetch 실패:", e);
+      userRun.delete(channelId);
+      return interaction.followUp({
+        content: `채널을 가져오지 못했어요. (에러: ${e?.message ?? "unknown"})`,
+        ephemeral: true,
+      });
+    }
+
     if (!channel || !channel.isTextBased()) {
       userRun.delete(channelId);
-      return;
+      return interaction.followUp({
+        content: `이 채널은 메시지 전송이 가능한 채널이 아니에요.`,
+        ephemeral: true,
+      });
     }
 
     for (let i = 0; i < count; i++) {
@@ -144,6 +158,13 @@ client.on("interactionCreate", async (interaction) => {
       try {
         await channel.send(message);
       } catch (e) {
+        console.error("[도배] 전송 실패:", e);
+        try {
+          await interaction.followUp({
+            content: `메시지 전송 실패: ${e?.message ?? "unknown"}`,
+            ephemeral: true,
+          });
+        } catch (_) {}
         break;
       }
 
