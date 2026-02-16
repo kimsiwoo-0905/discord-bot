@@ -10,7 +10,10 @@ const {
 } = require("discord.js");
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages  // ✅ 이 권한 추가!
+  ],
 });
 
 const INTERVAL_MS = 500;
@@ -131,9 +134,17 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
 
-    // ✅ 해결: interaction.channel.send() 사용
-    // followUp은 5개 제한이 있지만, channel.send()는 제한이 없습니다
-    const channel = interaction.channel;
+    // ✅ 채널 객체 제대로 가져오기
+    let channel;
+    try {
+      channel = await client.channels.fetch(channelId);
+    } catch (error) {
+      console.error("채널을 가져올 수 없습니다:", error);
+      return interaction.followUp({
+        content: "채널을 찾을 수 없어요.",
+        ephemeral: true,
+      });
+    }
 
     for (let i = 0; i < count; i++) {
       const current = getUserRunMap(userId).get(channelId);
@@ -147,7 +158,7 @@ client.on("interactionCreate", async (interaction) => {
         // 에러 발생 시 사용자에게 알림 (처음 한 번만)
         if (i === 0) {
           await interaction.followUp({
-            content: "메시지 전송 중 오류가 발생했어요.",
+            content: "메시지 전송 중 오류가 발생했어요. 봇 권한을 확인해주세요.",
             ephemeral: true,
           });
         }
@@ -159,14 +170,13 @@ client.on("interactionCreate", async (interaction) => {
 
     userRun.delete(channelId);
     
-    // 완료 메시지 (선택사항)
+    // 완료 메시지
     try {
       await interaction.followUp({
         content: "도배 완료!",
         ephemeral: true,
       });
     } catch (error) {
-      // followUp 실패해도 무시 (이미 완료됨)
       console.log("완료 메시지 전송 실패 (무시됨)");
     }
   }
