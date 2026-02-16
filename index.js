@@ -1,4 +1,5 @@
 require("dotenv").config();
+
 const {
   Client,
   GatewayIntentBits,
@@ -12,7 +13,7 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const INTERVAL_MS = 500; 
+const INTERVAL_MS = 500;
 const MAX_MESSAGE_LEN = 1500;
 const MAX_COUNT = 50;
 
@@ -126,24 +127,48 @@ client.on("interactionCreate", async (interaction) => {
 
     // 시작 메시지는 나만 보이게
     await interaction.reply({
-      content: `도배를 시작합니다.`,
+      content: `도배를 시작합니다. (${count}회)`,
       ephemeral: true,
     });
 
-    // 🔥 followUp을 사용하면 50개까지 정상 작동
+    // ✅ 해결: interaction.channel.send() 사용
+    // followUp은 5개 제한이 있지만, channel.send()는 제한이 없습니다
+    const channel = interaction.channel;
+
     for (let i = 0; i < count; i++) {
       const current = getUserRunMap(userId).get(channelId);
       if (!current || current.stop) break;
 
-      await interaction.followUp({
-        content: message,
-        ephemeral: false,
-      });
+      try {
+        await channel.send(message);
+      } catch (error) {
+        console.error(`메시지 전송 실패 (${i + 1}/${count}):`, error);
+        
+        // 에러 발생 시 사용자에게 알림 (처음 한 번만)
+        if (i === 0) {
+          await interaction.followUp({
+            content: "메시지 전송 중 오류가 발생했어요.",
+            ephemeral: true,
+          });
+        }
+        break;
+      }
 
       await sleep(INTERVAL_MS);
     }
 
     userRun.delete(channelId);
+    
+    // 완료 메시지 (선택사항)
+    try {
+      await interaction.followUp({
+        content: "도배 완료!",
+        ephemeral: true,
+      });
+    } catch (error) {
+      // followUp 실패해도 무시 (이미 완료됨)
+      console.log("완료 메시지 전송 실패 (무시됨)");
+    }
   }
 });
 
