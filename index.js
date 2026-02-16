@@ -12,12 +12,12 @@ const {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent  // ✅ 추가
   ],
 });
 
-// ✅ Rate Limit 고려: 최소 1초 간격 (Discord는 5메시지/5초 제한)
-const INTERVAL_MS = 1200;  // 500ms → 1200ms로 변경
+const INTERVAL_MS = 1200;
 const MAX_MESSAGE_LEN = 1500;
 const MAX_COUNT = 50;
 
@@ -135,19 +135,16 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
 
-    // 채널 객체 가져오기
-    let channel;
-    try {
-      channel = await client.channels.fetch(channelId);
-    } catch (error) {
-      console.error("채널을 가져올 수 없습니다:", error);
+    // ✅ interaction.channel 직접 사용 (fetch 없이)
+    const channel = interaction.channel;
+    
+    if (!channel) {
       return interaction.followUp({
-        content: "채널을 찾을 수 없어요.",
+        content: "채널 정보를 가져올 수 없어요.",
         ephemeral: true,
       });
     }
 
-    // ✅ Rate Limit 대응: 5메시지마다 추가 대기
     let sentCount = 0;
     
     for (let i = 0; i < count; i++) {
@@ -158,7 +155,7 @@ client.on("interactionCreate", async (interaction) => {
         await channel.send(message);
         sentCount++;
         
-        // 5개 보낼 때마다 추가로 2초 대기 (Rate Limit 방지)
+        // 5개마다 추가 대기
         if (sentCount % 5 === 0 && i < count - 1) {
           await sleep(2000);
         } else {
@@ -168,19 +165,28 @@ client.on("interactionCreate", async (interaction) => {
       } catch (error) {
         console.error(`메시지 전송 실패 (${i + 1}/${count}):`, error);
         
-        // Rate Limit 에러인 경우
+        // Rate Limit 처리
         if (error.code === 429) {
           const retryAfter = error.retry_after || 5000;
           console.log(`Rate limit 도달. ${retryAfter}ms 대기 중...`);
           await sleep(retryAfter);
-          i--; // 다시 시도
+          i--;
           continue;
+        }
+        
+        // 권한 에러
+        if (error.code === 50001 || error.code === 50013) {
+          await interaction.followUp({
+            content: "메시지를 보낼 권한이 없어요. 서버 관리자에게 문의하세요.",
+            ephemeral: true,
+          });
+          break;
         }
         
         // 기타 에러
         if (i === 0) {
           await interaction.followUp({
-            content: "메시지 전송 중 오류가 발생했어요. 봇 권한을 확인해주세요.",
+            content: `메시지 전송 중 오류: ${error.message}`,
             ephemeral: true,
           });
         }
@@ -190,14 +196,13 @@ client.on("interactionCreate", async (interaction) => {
 
     userRun.delete(channelId);
     
-    // 완료 메시지
     try {
       await interaction.followUp({
         content: `도배 완료! (총 ${sentCount}개 전송)`,
         ephemeral: true,
       });
     } catch (error) {
-      console.log("완료 메시지 전송 실패 (무시됨)");
+      console.log("완료 메시지 전송 실패");
     }
   }
 });
