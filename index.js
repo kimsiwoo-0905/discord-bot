@@ -12,10 +12,9 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const INTERVAL_MS = 2000;
+const INTERVAL_MS = 500; 
 const MAX_MESSAGE_LEN = 1500;
 const MAX_COUNT = 50;
-const REAL_MAX_SEND = 5; // 🔥 실제 최대 전송 개수
 
 const runningByUser = new Map();
 
@@ -32,20 +31,25 @@ function getUserRunMap(userId) {
   return m;
 }
 
-async function sendPublic(interaction, content) {
-  return interaction.followUp({ content, ephemeral: false });
-}
-
 client.once("ready", () => {
   console.log(`로그인됨: ${client.user.tag}`);
 });
 
 client.on("interactionCreate", async (interaction) => {
+  // 슬래시 명령
   if (interaction.isChatInputCommand()) {
     const userId = interaction.user.id;
     const channelId = interaction.channelId;
 
     if (interaction.commandName === "도배") {
+      const userRun = getUserRunMap(userId);
+      if (userRun.has(channelId)) {
+        return interaction.reply({
+          content: "이미 진행 중이에요.",
+          ephemeral: true,
+        });
+      }
+
       const modal = new ModalBuilder()
         .setCustomId("dobae_modal")
         .setTitle("도배 설정");
@@ -59,7 +63,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const countInput = new TextInputBuilder()
         .setCustomId("dobae_count")
-        .setLabel("반복 횟수 (1~50)")
+        .setLabel("반복 횟수 (숫자만 1~50)")
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
 
@@ -73,18 +77,24 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.commandName === "도배중지") {
       const userRun = getUserRunMap(userId);
-
       if (userRun.size === 0) {
-        return interaction.reply({ content: "진행 중인 도배가 없어요.", ephemeral: true });
+        return interaction.reply({
+          content: "진행 중인 도배가 없어요.",
+          ephemeral: true,
+        });
       }
 
       for (const state of userRun.values()) state.stop = true;
       userRun.clear();
 
-      return interaction.reply({ content: "도배를 중지했어요.", ephemeral: true });
+      return interaction.reply({
+        content: "도배를 중지했어요.",
+        ephemeral: true,
+      });
     }
   }
 
+  // 모달 제출
   if (interaction.isModalSubmit()) {
     if (interaction.customId !== "dobae_modal") return;
 
@@ -105,7 +115,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (count < 1 || count > MAX_COUNT) {
       return interaction.reply({
-        content: "반복 횟수는 1~50만 가능합니다.",
+        content: `1~50 사이 숫자만 가능해요.`,
         ephemeral: true,
       });
     }
@@ -114,27 +124,26 @@ client.on("interactionCreate", async (interaction) => {
     const state = { stop: false };
     userRun.set(channelId, state);
 
-    // 🔥 실제 보낼 개수는 최대 5개
-    const sendCount = Math.min(count, REAL_MAX_SEND);
-
+    // 시작 메시지는 나만 보이게
     await interaction.reply({
-      content: `전송 시작! 최대 ${REAL_MAX_SEND}개까지만 전송됩니다.`,
+      content: `도배를 시작합니다.`,
       ephemeral: true,
     });
 
-    try {
-      for (let i = 0; i < sendCount; i++) {
-        const current = getUserRunMap(userId).get(channelId);
-        if (!current || current.stop) break;
+    // 🔥 followUp을 사용하면 50개까지 정상 작동
+    for (let i = 0; i < count; i++) {
+      const current = getUserRunMap(userId).get(channelId);
+      if (!current || current.stop) break;
 
-        await sendPublic(interaction, message);
-        await sleep(INTERVAL_MS);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      getUserRunMap(userId).delete(channelId);
+      await interaction.followUp({
+        content: message,
+        ephemeral: false,
+      });
+
+      await sleep(INTERVAL_MS);
     }
+
+    userRun.delete(channelId);
   }
 });
 
