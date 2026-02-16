@@ -6,53 +6,32 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require("discord.js");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const INTERVAL_MS = 500;
 const MAX_MESSAGE_LEN = 1500;
-const MAX_COUNT = 50;
 
-const runningByUser = new Map();
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function getUserRunMap(userId) {
-  let m = runningByUser.get(userId);
-  if (!m) {
-    m = new Map();
-    runningByUser.set(userId, m);
-  }
-  return m;
-}
+// userId -> { message: string }
+const userMessageStore = new Map();
 
 client.once("ready", () => {
   console.log(`로그인됨: ${client.user.tag}`);
 });
 
 client.on("interactionCreate", async (interaction) => {
-  // 슬래시 명령
+  // ✅ /도배, /도배중지
   if (interaction.isChatInputCommand()) {
     const userId = interaction.user.id;
-    const channelId = interaction.channelId;
 
     if (interaction.commandName === "도배") {
-      const userRun = getUserRunMap(userId);
-      if (userRun.has(channelId)) {
-        return interaction.reply({
-          content: "이미 진행 중이에요.",
-          ephemeral: true,
-        });
-      }
-
       const modal = new ModalBuilder()
         .setCustomId("dobae_modal")
-        .setTitle("도배 설정");
+        .setTitle("도배 메시지 입력");
 
       const msgInput = new TextInputBuilder()
         .setCustomId("dobae_message")
@@ -61,117 +40,98 @@ client.on("interactionCreate", async (interaction) => {
         .setMaxLength(MAX_MESSAGE_LEN)
         .setRequired(true);
 
-      const countInput = new TextInputBuilder()
-        .setCustomId("dobae_count")
-        .setLabel("반복 횟수 (숫자만 1~50)")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(msgInput),
-        new ActionRowBuilder().addComponents(countInput)
-      );
+      modal.addComponents(new ActionRowBuilder().addComponents(msgInput));
 
       return interaction.showModal(modal);
     }
 
     if (interaction.commandName === "도배중지") {
-      const userRun = getUserRunMap(userId);
-      if (userRun.size === 0) {
-        return interaction.reply({
-          content: "진행 중인 도배가 없어요.",
-          ephemeral: true,
-        });
-      }
-
-      for (const state of userRun.values()) state.stop = true;
-      userRun.clear();
+      // 지금 구조에서는 반복 타이머가 없어서 "중지"는 패널 제거 용도로 처리
+      userMessageStore.delete(userId);
 
       return interaction.reply({
-        content: "도배를 중지했어요.",
+        content: "도배 패널을 종료했어요. 다시 하려면 /도배",
         ephemeral: true,
       });
     }
   }
 
-  // 모달 제출
+  // ✅ 모달 제출 처리
   if (interaction.isModalSubmit()) {
     if (interaction.customId !== "dobae_modal") return;
 
     const userId = interaction.user.id;
-    const channelId = interaction.channelId;
+    const message = (interaction.fields.getTextInputValue("dobae_message") ?? "").trim();
 
-    const message = interaction.fields.getTextInputValue("dobae_message").trim();
-    const countStr = interaction.fields.getTextInputValue("dobae_count").trim();
-
-    if (!/^\d+$/.test(countStr)) {
+    if (!message) {
+      return interaction.reply({ content: "메시지를 입력해줘요.", ephemeral: true });
+    }
+    if (message.length > MAX_MESSAGE_LEN) {
       return interaction.reply({
-        content: "숫자만 입력해주세요.",
+        content: `메시지는 ${MAX_MESSAGE_LEN}자 이내만 가능해요.`,
         ephemeral: true,
       });
     }
 
-    const count = parseInt(countStr, 10);
+    // 유저별로 메시지 저장
+    userMessageStore.set(userId, { message });
 
-    if (count < 1 || count > MAX_COUNT) {
-      return interaction.reply({
-        content: `1~50 사이 숫자만 가능해요.`,
-        ephemeral: true,
-      });
-    }
+    // 버튼 만들기 (유저별로 다른 customId)
+    const sendBtn = new ButtonBuilder()
+      .setCustomId(`dobae_send:${userId}`)
+      .setLabel("전송")
+      .setStyle(ButtonStyle.Primary);
 
-    const userRun = getUserRunMap(userId);
-    const state = { stop: false };
-    userRun.set(channelId, state);
+    const row = new ActionRowBuilder().addComponents(sendBtn);
 
-    // 시작 메시지는 나만 보이게
-    await interaction.reply({
-      content: `도배를 시작합니다.`,
+    // 패널은 "나만 보이게"
+    return interaction.reply({
+      content: "버튼을 누를 때마다 메시지가 1번 전송돼요.",
+      components: [row],
       ephemeral: true,
     });
+  }
 
-    // ✅ 채널에 직접 전송
-    let channel;
+  // ✅ 버튼 클릭 처리
+  if (interaction.isButton()) {
+    const [prefix, ownerId] = interaction.customId.split(":");
+    if (prefix !== "dobae_send") return;
+
+    // 버튼은 만든 사람만 누를 수 있게
+    if (interaction.user.id !== ownerId) {
+      return interaction.reply({
+        content: "이 버튼은 만든 사람만 사용할 수 있어요.",
+        ephemeral: true,
+      });
+    }
+
+    const saved = userMessageStore.get(ownerId);
+    if (!saved || !saved.message) {
+      return interaction.reply({
+        content: "저장된 메시지가 없어요. /도배로 다시 설정해줘요.",
+        ephemeral: true,
+      });
+    }
+
+    // ✅ 공개 전송 (followUp 사용)
     try {
-      channel = await interaction.client.channels.fetch(channelId);
+      await interaction.followUp({
+        content: saved.message,
+        ephemeral: false,
+      });
+
+      // 버튼 클릭에 대한 응답(나만)
+      return interaction.reply({
+        content: "전송 완료!",
+        ephemeral: true,
+      });
     } catch (e) {
-      console.error("[도배] 채널 fetch 실패:", e);
-      userRun.delete(channelId);
-      return interaction.followUp({
-        content: `채널을 가져오지 못했어요. (에러: ${e?.message ?? "unknown"})`,
+      console.error("SEND ERROR:", e?.message || e);
+      return interaction.reply({
+        content: "전송 실패(제한/권한 문제).",
         ephemeral: true,
       });
     }
-
-    if (!channel || !channel.isTextBased()) {
-      userRun.delete(channelId);
-      return interaction.followUp({
-        content: `이 채널은 메시지 전송이 가능한 채널이 아니에요.`,
-        ephemeral: true,
-      });
-    }
-
-    for (let i = 0; i < count; i++) {
-      const current = getUserRunMap(userId).get(channelId);
-      if (!current || current.stop) break;
-
-      try {
-        await channel.send(message);
-      } catch (e) {
-        console.error("[도배] 전송 실패:", e);
-        try {
-          await interaction.followUp({
-            content: `메시지 전송 실패: ${e?.message ?? "unknown"}`,
-            ephemeral: true,
-          });
-        } catch (_) {}
-        break;
-      }
-
-      await sleep(INTERVAL_MS);
-    }
-
-    userRun.delete(channelId);
   }
 });
 
