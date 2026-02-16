@@ -12,7 +12,7 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const INTERVAL_MS = 500; 
+const INTERVAL_MS = 500;
 const MAX_MESSAGE_LEN = 1500;
 const MAX_COUNT = 50;
 
@@ -130,18 +130,26 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
 
-   const channel = await client.channels.fetch(channelId);
+    // ✅ followUp 말고 채널에 직접 전송 (50개까지 정상)
+    const channel = await interaction.client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased()) {
+      userRun.delete(channelId);
+      return;
+    }
 
-for (let i = 0; i < count; i++) {
-  const current = getUserRunMap(userId).get(channelId);
-  if (!current || current.stop) break;
+    for (let i = 0; i < count; i++) {
+      const current = getUserRunMap(userId).get(channelId);
+      if (!current || current.stop) break;
 
-  await channel.send({
-    content: message,
-  });
+      try {
+        await channel.send(message);
+      } catch (e) {
+        break;
+      }
 
-  await sleep(INTERVAL_MS);
-}
+      await sleep(INTERVAL_MS);
+    }
+
     userRun.delete(channelId);
   }
 });
