@@ -1,0 +1,14 @@
+{
+  "name": "discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "node deploy-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.13.0",
+    "dotenv": "^16.3.1"
+  }
+}bot/package.json
